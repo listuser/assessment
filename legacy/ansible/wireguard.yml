@@ -1,0 +1,181 @@
+---
+- name: "Install and Configure WireGuard with Native nftables"
+  hosts: wireguard
+  become: yes
+  vars:
+    vpn_port: 51820
+    vpn_interface: wg0
+    server_ip_range: "10.0.0.1/24"
+    client_ip: "10.0.0.2/32"
+
+  tasks:
+    - name: "System | Install WireGuard Tools and nftables with memory flags"
+      ansible.builtin.command:
+        cmd: dnf install -y wireguard-tools nftables --setopt=max_parallel_downloads=1 --setopt=minfree=0
+        creates: /usr/bin/wg
+
+    - name: "Kernel | Enable IPv4 Forwarding"
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    - name: "Security | Configure nftables base rules"
+      ansible.builtin.copy:
+        dest: /etc/sysconfig/nftables.conf
+        mode: '0600'
+        content: |
+          flush ruleset
+          table ip nat {
+              chain postrouting {
+                  type nat hook postrouting priority 100;
+                  ip saddr 10.0.0.0/24 masquerade
+              }
+          }
+          table inet filter {
+              chain input {
+                  type filter hook input priority 0; policy drop;
+                  iifname "lo" accept
+                  iifname "{{ vpn_interface }}" accept
+                  ct state established,related accept
+                  tcp dport 22 accept
+                  udp dport {{ vpn_port }} accept
+              }
+
+              chain forward {
+                  type filter hook forward priority 0; policy drop;
+                  ct state established,related accept
+                  iifname "{{ vpn_interface }}" accept
+                  oifname "{{ vpn_interface }}" ct state established,related accept
+              }
+
+              chain output {
+                  type filter hook output priority 0; policy accept;
+              }
+          }
+
+    - name: "Security | Enable and start nftables service"
+      ansible.builtin.systemd:
+        name: nftables
+        enabled: yes
+        state: restarted
+
+    - name: "Filesystem | Ensure /etc/wireguard exists"
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Crypto | Ensure Private Key exists"
+      ansible.builtin.shell: "wg genkey > /etc/wireguard/server.key"
+      args:
+        creates: /etc/wireguard/server.key
+
+    - name: "Crypto | Read Private Key"
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.key
+      register: s_priv_encoded
+      no_log: true
+
+    - name: "Crypto | Generate Public Key"
+      ansible.builtin.shell: "cat /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub"
+      args:
+        creates: /etc/wireguard/server.pub
+
+    - name: "Crypto | Read Public Key"
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.pub
+      register: s_pub_encoded
+
+    - name: "Crypto | Ensure Client Private Key exists"
+      ansible.builtin.shell: "wg genkey > /etc/wireguard/client.key"
+      args:
+        creates: /etc/wireguard/client.key
+
+    - name: "Crypto | Read Client Private Key"
+      ansible.builtin.slurp:
+        src: /etc/wireguard/client.key
+      register: c_priv_encoded
+      no_log: true
+
+    - name: "Crypto | Generate Client Public Key"
+      ansible.builtin.shell: "cat /etc/wireguard/client.key | wg pubkey > /etc/wireguard/client.pub"
+      args:
+        creates: /etc/wireguard/client.pub
+
+    - name: "Crypto | Read Client Public Key"
+      ansible.builtin.slurp:
+        src: /etc/wireguard/client.pub
+      register: c_pub_encoded
+
+    - name: "Config | Template WireGuard server configuration"
+      ansible.builtin.copy:
+        dest: "/etc/wireguard/{{ vpn_interface }}.conf"
+        mode: '0600'
+        content: |
+          [Interface]
+          PrivateKey = {{ s_priv_encoded.content | b64decode | trim }}
+          Address = {{ server_ip_range }}
+          ListenPort = {{ vpn_port }}
+
+          [Peer]
+          PublicKey = {{ c_pub_encoded.content | b64decode | trim }}
+          AllowedIPs = {{ client_ip }}
+
+    - name: "Service | Enable and start WireGuard"
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ vpn_interface }}"
+        enabled: yes
+        state: restarted
+
+    - name: "Set FastAPI Private IP from inventory"
+      set_fact:
+        fastapi_internal_ip: "{{ hostvars[groups['fastapi'][0]]['private_ip'] }}"
+
+    - name: "Set VPN server public IP from inventory"
+      set_fact:
+        server_public_ip: "{{ hostvars[groups['wireguard'][0]]['ansible_host'] }}"
+
+    - name: "Client | Generate wg0-client.conf on VPN server"
+      ansible.builtin.copy:
+        dest: /etc/wireguard/wg0-client.conf
+        mode: '0600'
+        content: |
+          [Interface]
+          PrivateKey = {{ c_priv_encoded.content | b64decode | trim }}
+          Address = 10.0.0.2/24
+          MTU = 1420
+
+          [Peer]
+          PublicKey = {{ s_pub_encoded.content | b64decode | trim }}
+          Endpoint = {{ server_public_ip }}:{{ vpn_port }}
+          AllowedIPs = 10.0.0.1/32, {{ fastapi_internal_ip }}/32
+          PersistentKeepalive = 21
+
+    - name: "Client | Fetch wg0-client.conf to control machine"
+      ansible.builtin.fetch:
+        src: /etc/wireguard/wg0-client.conf
+        dest: ./wg0-client.conf
+        flat: yes
+
+    - name: "Verification | Check WireGuard Interface Status"
+      ansible.builtin.command: wg show {{ vpn_interface }}
+      register: wg_status
+      changed_when: false
+
+    - name: "Verification | Output Status"
+      ansible.builtin.debug:
+        var: wg_status.stdout_lines
+
+    - name: "Security | Cleanup sensitive client keys from server"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/wireguard/client.key
+        - /etc/wireguard/client.pub
+        - /etc/wireguard/wg0-client.conf

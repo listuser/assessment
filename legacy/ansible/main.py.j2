@@ -1,0 +1,129 @@
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
+from random import randint
+from threading import Lock
+import ipaddress
+from datetime import datetime
+
+app = FastAPI()
+
+# Thread-safe counters
+counter_status = 0
+counter_secure = 0
+counter_lock = Lock()
+
+# History for visualization
+history_status = []
+history_secure = []
+
+# VPN and Management IPs - Templated via Ansible
+ALLOWED_IPS = [
+    ipaddress.ip_network("10.0.0.0/24"),
+    ipaddress.ip_network("{{ hostvars[groups['wireguard'][0]]['private_ip'] }}/32")
+]
+
+def is_on_vpn(ip_str):
+    client_ip = ipaddress.ip_address(ip_str)
+    return any(client_ip in net for net in ALLOWED_IPS)
+
+def record_hit(history_list, is_secure=False):
+    """Increments the appropriate counter and returns the shared hit format."""
+    global counter_status, counter_secure
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    with counter_lock:
+        if is_secure:
+            counter_secure += 1
+            hits = counter_secure
+        else:
+            counter_status += 1
+            hits = counter_status
+        history_list.append({"time": timestamp, "hits": hits})
+    
+    return {"hits": hits, "random_number": randint(1, 10)}
+
+@app.get("/status")
+def status():
+    return record_hit(history_status, is_secure=False)
+
+@app.get("/secure-status")
+def secure_status(request: Request):
+    if not is_on_vpn(request.client.host):
+        raise HTTPException(status_code=403, detail="Access denied: must be on VPN")
+    return record_hit(history_secure, is_secure=True)
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    client_ip = request.client.host
+    on_vpn = is_on_vpn(client_ip)
+
+    status_labels = [h['time'] for h in history_status]
+    status_data = [h['hits'] for h in history_status]
+    secure_labels = [h['time'] for h in history_secure]
+    secure_data = [h['hits'] for h in history_secure]
+
+{% raw %}
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>VPN Assessment Dashboard</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <style>
+            body {{ font-family: sans-serif; margin: 40px; background: #f4f4f9; }}
+            .container {{ max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .status-badge {{ padding: 5px 10px; border-radius: 4px; color: white; font-weight: bold; }}
+            .on {{ background: #28a745; }} .off {{ background: #dc3545; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Network Status: <span class="status-badge {'on' if on_vpn else 'off'}">{'SECURE VPN' if on_vpn else 'PUBLIC NET'}</span></h1>
+            <p>Your IP: <code>{client_ip}</code></p>
+            <hr>
+            <h3>Public Endpoint Hits (/status)</h3>
+            <canvas id="statusChart" width="600" height="250"></canvas>
+            {f'''
+            <h3 style="color: #28a745;">Secure Endpoint Hits (/secure-status)</h3>
+            <canvas id="secureChart" width="600" height="250"></canvas>
+            ''' if on_vpn else '<p style="color: #dc3545; font-weight: bold;">⚠️ Secure metrics are hidden. Connect to WireGuard to view.</p>'}
+        </div>
+        <script>
+            const ctxStatus = document.getElementById('statusChart').getContext('2d');
+            new Chart(ctxStatus, {{
+                type: 'line',
+                data: {{
+                    labels: {status_labels},
+                    datasets: [{{
+                        label: 'Public Traffic',
+                        data: {status_data},
+                        borderColor: '#007bff',
+                        tension: 0.3,
+                        fill: true,
+                        backgroundColor: 'rgba(0, 123, 255, 0.1)'
+                    }}]
+                }}
+            }});
+            {f'''
+            const ctxSecure = document.getElementById('secureChart').getContext('2d');
+            new Chart(ctxSecure, {{
+                type: 'line',
+                data: {{
+                    labels: {secure_labels},
+                    datasets: [{{
+                        label: 'VPN Tunnel Traffic',
+                        data: {secure_data},
+                        borderColor: '#28a745',
+                        tension: 0.3,
+                        fill: true,
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)'
+                    }}]
+                }}
+            }});
+            ''' if on_vpn else ""}
+        </script>
+    </body>
+    </html>
+    """
+{% endraw %}
+    return HTMLResponse(content=html_content)

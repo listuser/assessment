@@ -1,0 +1,90 @@
+---
+- name: "Deploy FastAPI Dashboard"
+  hosts: fastapi
+  become: yes
+  vars:
+    app_user: fastapi
+    app_dir: /opt/fastapi-dashboard
+    python_bin: /usr/bin/python3
+    venv_dir: /opt/fastapi-dashboard/venv
+    service_name: fastapi-dashboard
+    requirements_content: |
+      fastapi
+      uvicorn[standard]
+
+  tasks:
+    - name: "System | Install Python3 and pip"
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+        state: present
+
+    - name: "System | Create app user"
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        shell: /bin/bash
+        system: yes
+        create_home: no
+
+    - name: "Filesystem | Create app directory"
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: "App | Create Python virtual environment"
+      ansible.builtin.command:
+        cmd: "{{ python_bin }} -m venv {{ venv_dir }}"
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: "App | Copy requirements.txt"
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/requirements.txt"
+        content: "{{ requirements_content }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+
+    - name: "App | Install Python dependencies"
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3
+
+    - name: "App | Template main.py from playbook directory"
+      ansible.builtin.template:
+        src: "main.py.j2"
+        dest: "{{ app_dir }}/main.py"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+
+    - name: "Systemd | Create service for FastAPI app"
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/{{ service_name }}.service
+        content: |
+          [Unit]
+          Description=FastAPI Dashboard Service
+          After=network.target
+
+          [Service]
+          User={{ app_user }}
+          Group={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          ExecStart={{ venv_dir }}/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+
+    - name: "Systemd | Enable and start FastAPI service"
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: yes
+        state: restarted
+        daemon_reload: yes

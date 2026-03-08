@@ -154,6 +154,12 @@ python test_fastapi.py
 
 ## Cleanup
 
+- As root user, down the VPN.
+
+```bash
+wg-quick down wg0
+```
+
 - As the user, teardown the DigitalOcean infrastructure to avoid ongoing charges on your DigitalOcean account.
 
 ```bash

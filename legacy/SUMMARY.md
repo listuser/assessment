@@ -4,29 +4,6 @@
 This project demonstrates a streamlined, automated workflow for provisioning and configuring a secure cloud environment on DigitalOcean. By integrating **Infrastructure as Code (Terraform)** with **Configuration Management (Ansible)**, the solution ensures a reliable, repeatable deployment from a bare Linux environment to a fully functional application stack.
 
 ## Technical Architecture
-```mermaid
-graph TD
-    subgraph Local_Machine [Local Machine]
-        TF[Terraform]
-        AN[Ansible]
-    end
-
-    subgraph DO_Cloud [DigitalOcean VPC]
-        direction TB
-        subgraph Droplet [AlmaLinux Droplet]
-            WG[Wireguard Interface]
-            FA[FastAPI Service]
-            VENV[Python venv]
-        end
-    end
-
-    TF -->|Provision| Droplet
-    AN -->|Configure| WG
-    AN -->|Deploy| FA
-    Local_Machine -.->|Encrypted Tunnel| WG
-    WG --> FA
-```
-
 * **Infrastructure (IaC):** Terraform manages the DigitalOcean lifecycle, including VPC networking and Droplet provisioning.
 * **Configuration Management:** Ansible handles the internal setup of the Droplets, moving from a raw OS state to a configured service.
 * **Security Stack:**

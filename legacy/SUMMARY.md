@@ -4,6 +4,28 @@
 This project demonstrates a streamlined, automated workflow for provisioning and configuring a secure cloud environment on DigitalOcean. By integrating **Infrastructure as Code (Terraform)** with **Configuration Management (Ansible)**, the solution ensures a reliable, repeatable deployment from a bare Linux environment to a fully functional application stack.
 
 ## Technical Architecture
+```mermaid
+graph TD
+    subgraph Local_Machine [Local Machine]
+        TF[Terraform]
+        AN[Ansible]
+    end
+
+    subgraph DO_Cloud [DigitalOcean VPC]
+        direction TB
+        subgraph Droplet [AlmaLinux Droplet]
+            WG[Wireguard Interface]
+            FA[FastAPI Service]
+            VENV[Python venv]
+        end
+    end
+
+    TF -->|Provision| Droplet
+    AN -->|Configure| WG
+    AN -->|Deploy| FA
+    Local_Machine -.->|Encrypted Tunnel| WG
+    WG --> FA
+```
 * **Infrastructure (IaC):** Terraform manages the DigitalOcean lifecycle, including VPC networking and Droplet provisioning.
 * **Configuration Management:** Ansible handles the internal setup of the Droplets, moving from a raw OS state to a configured service.
 * **Security Stack:**
@@ -63,3 +85,29 @@ While this deployment meets all functional requirements, the following areas rep
   - Terraform: Refactor into Modules (e.g., modules/networking, modules/compute) with a clear separation of variables.tf, outputs.tf, and providers.tf.
   - Ansible: Transition to an Ansible Roles architecture (roles/wireguard, roles/fastapi). This allows for better task reuse, clearer variable precedence, and cleaner template management.
   - Separation of Concerns: Move from the current "down and dirty" flat file approach to a hierarchical structure that supports multi-environment (Dev/Staging/Prod) deployments.
+
+### 10. Application Logic & Data Persistence
+* **Current State:** The FastAPI application serves as a stateless demonstration tool. It utilizes **in-memory data structures** (Python lists and integers) for hit tracking and a **monolithic architecture** where the HTML frontend is hard-coded within the endpoint logic. Network security is enforced via static IP whitelisting injected during the Ansible provisioning phase.
+* **Improvements:**
+    * **External Persistence:** Transition from in-memory variables to a persistent data store like **SQLite** or **Redis**. This ensures that metric history survives service restarts or Droplet reboots.
+    * **Frontend Decoupling:** Refactor the dashboard into a proper **Jinja2 template** or a separate frontend framework. This moves the project toward an **API-first design** where the dashboard fetches JSON data rather than relying on server-side string interpolation.
+    * **Dynamic Configuration:** Move `ALLOWED_IPS` and other environment-specific variables into a `.env` file or **Systemd environment variables**. This allows for configuration updates without modifying the source code.
+    * **Middleware Migration:** Implement the VPN check (`is_on_vpn`) as a **FastAPI Dependency** or **Middleware**. This centralizes security logic, preventing code duplication across multiple protected endpoints.
+    * **Memory Management:** Implement a sliding window or a maximum limit for the `history_list` to prevent unbounded memory growth in the Python process over long-running uptimes.
+
+### 11. Web Server & Encryption (SSL/TLS)
+* **Current State:** The application is served directly via **Uvicorn** on a public-facing port without an encryption layer. All non-VPN traffic is transmitted via **unencrypted HTTP**. There is no **Reverse Proxy** in place to handle request buffering, SSL termination, or header sanitization.
+* **Improvements:**
+    * **Reverse Proxy Integration:** Deploy **Nginx** or **Caddy** as a frontend for the FastAPI application. This provides a robust layer for rate limiting, static file serving, and hiding the application server's direct signature.
+    * **SSL/TLS Termination:** Implement automated certificate management using **Certbot (Let's Encrypt)**. This would transition the site from `http://` to `https://`, ensuring all data in transit is encrypted.
+    * **Defense in Depth:** Even though the Wireguard tunnel provides its own encryption, implementing SSL at the application layer ensures end-to-end encryption and protects against potential sniffing on the internal virtual interface.
+    * **Security Headers:** Utilize the reverse proxy to inject industry-standard security headers (e.g., HSTS, X-Frame-Options, and Content-Security-Policy) to mitigate common web-based attack vectors.
+
+### 12. Architectural Documentation & Visualization
+
+* **Current State:** The project lacks visual architectural documentation. The network relationships—specifically how the **Wireguard tunnel** overlays onto the **DigitalOcean VPC** and how traffic flows from public vs. private interfaces—are defined only within the code and configuration files.
+* **Improvements:**
+    * **Diagrams as Code:** Integrate **Diagrams (Python)** or **Mermaid.js** definitions within the repository to generate up-to-date infrastructure maps. This would clearly visualize the "Split-Horizon" access model where the `/secure-status` endpoint is isolated from the public internet.
+    * **Multi-Tier Visualization:** Document the logical separation between the **Management Plane** (SSH/Terraform), the **Control Plane** (Wireguard/VPN), and the **Data Plane** (FastAPI/Public Web).
+    * **Network Flow Mapping:** Create detailed sequence diagrams showing the packet journey: from a client’s local `wg0` interface, through the encrypted UDP tunnel, to the FastAPI service bound to the internal gateway.
+    * **Automated README Badges:** Implement CI/CD badges that reflect real-time deployment status, linting results, and security scan scores to provide an immediate "at-a-glance" health report for the project.

@@ -26,6 +26,7 @@ graph TD
     Local_Machine -.->|Encrypted Tunnel| WG
     WG --> FA
 ```
+
 * **Infrastructure (IaC):** Terraform manages the DigitalOcean lifecycle, including VPC networking and Droplet provisioning.
 * **Configuration Management:** Ansible handles the internal setup of the Droplets, moving from a raw OS state to a configured service.
 * **Security Stack:**
